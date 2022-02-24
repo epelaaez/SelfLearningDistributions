@@ -10,24 +10,24 @@ class Sampler:
         self.m = m
         self.r = None
 
-        if params == None:
+        if isinstance(params, type(None)):
             params = []
             for _ in range(D):
                 p    = np.zeros(2**m, dtype="complex")
                 p[0] = (1/np.sqrt(2)) * (1 + 1j) 
                 params.append(p)
-        self.params = params
+        self.params = np.array(params)
 
-        if funcs == None:
+        if isinstance(funcs, type(None)):
             if D > 1:
                 norm       = lambda var, theta: theta / (np.sqrt(np.dot(theta, theta.conj())))
                 self.funcs = [norm for _ in range(D)]
 
-        if target == None:
+        if isinstance(target, type(None)):
             self.target = lambda r: 1 / (2 ** n)
 
-        if backend == None:
-            self.backend = Aer.get_backend("statevector_simulator")
+        if isinstance(backend, type(None)):
+            self.backend = Aer.get_backend("aer_simulator_statevector")
         self.shots = shots
 
         qft = QuantumCircuit(n)
@@ -36,19 +36,21 @@ class Sampler:
             for j in range(i -1, -1, -1):
                 x = 2 ** (j - i)
                 qft.cp(np.pi * x, i, j)
+        for i in range(n // 2):
+            qft.swap(i, n - i - 1)
         self._qft = qft
 
     def create_circuits(self, D=None, r=None, params=None, process=True):
         """
         Create the sampler circuit(s) using initialization data.
         """
-        if D == None:
+        if isinstance(D, type(None)):
             D = self.D
-        if r == None and self.r == None:
+        if isinstance(r, type(None)) and isinstance(self.r, type(None)) and D != 1:
             raise TypeError("Random variable must be set in Sampler object or passed to this function.")
-        elif r == None and self.r != None:
+        elif isinstance(r, type(None)) and not isinstance(self.r, type(None)):
             r = self.r
-        if params == None:
+        if isinstance(params, type(None)):
             params = self.params
 
         # One-dimensional sampler
@@ -56,14 +58,29 @@ class Sampler:
             circuits = self._one_dimension_sampler(params[0])
         # Multi-dimensional sampler
         else:
-            if self.r == None:
-                raise TypeError("Random variable (`self.r`) must be specified to construct multi-dimensional circuit.")
             circuits = []
             if process:
                 params = self._process_params(r)
             for theta in params:
                 circuits.append(self._one_dimension_sampler(theta))
         return circuits
+
+    def _process_params(self, r=None):
+        """
+        Process params for multi-dimensional sampler.
+        """
+        if self.D == 1:
+            return self.params
+
+        if isinstance(r, type(None)) and isinstance(self.r, type(None)):
+            raise TypeError("Random variable must be set in Sampler object or passed to this function.")
+        elif isinstance(r, type(None)) and not isinstance(self.r, type(None)):
+            r = self.r 
+
+        params = []
+        for k in range(len(self.params)):
+            params.append(self.funcs[k](r[0:k], self.params[k]))
+        return params
 
     def _one_dimension_sampler(self, theta):
         """
@@ -81,53 +98,97 @@ class Sampler:
 
         return transpile(qc, basis_gates=["cx", "u"], optimization_level=3)
 
-    def _process_params(self, r=None):
-        """
-        Process params for multi-dimensional sampler.
-        """
-        if r == None and self.r == None:
-            raise TypeError("Random variable must be set in Sampler object or passed to this function.")
-        elif r == None and self.r != None:
-            r = self.r 
-
-        params = []
-        for k in range(len(self.params)):
-            params.append(self.funcs[k](r[0:k], self.params[k]))
-        return params
-
-    def prob_from_sampler(self, r=None):
+    def prob_from_sampler(self, r=None, qc=None, delta=0.01, maxiter=3):
         """
         Given a random variable, give its probability using the sampler's distribution.
         """
-        if r == None and self.r == None:
+        if isinstance(r, type(None)) and isinstance(self.r, type(None)):
             raise TypeError("Random variable must be set in Sampler object or passed to this function.")
-        elif r == None and self.r != None:
+        elif isinstance(r, type(None)) and not isinstance(self.r, type(None)):
             r = self.r
         n = self.n
 
         if isinstance(r, int):
             # One-dimensional case
             b  = format(r, "b").zfill(n)[::-1]
-            qc = self.create_circuits(D=1)
+            if qc == None:
+                qc = self.create_circuits(D=1)
+            for i in range(n):
+                if b[i] == "0":
+                    qc.x(i)
+
+            problem = EstimationProblem(
+                state_preparation = qc,
+                objective_qubits  = [i for i in range(n)],
+            )
+
+            fae = FasterAmplitudeEstimation(
+                delta            = delta,
+                maxiter          = maxiter,
+                quantum_instance = self.backend,
+            )
+
+            result = fae.estimate(problem)
+            return result.estimation
+
+        elif isinstance(r, np.ndarray) or isinstance(r, list):
+            # Multi-dimensional case
+            prob = 1
+            if qc == None:
+                qc = self.create_circuits(r=r)
+            for i in range(len(r)):
+                prob *= self.prob_from_sampler(qc=qc[i], r=r[i])
+            return prob
+
+        else:
+            raise TypeError("Random variable `r` must be an int for one-dimensional case or np.ndarray or list for multi-dimensional case.")
+
+    def cross_entropy(self, target=None, r=None):
+        """
+        Calculate cross entropy of sampler with target distribution.
+        """
+        D = self.D
+        n = self.n
+
+        if isinstance(target, type(None)):
+            target = self.target
+        elif not callable(target):
+            raise TypeError("Target distribution passed to the function is not callable.")
+        if isinstance(r, type(None)):
+            if D == 1:
+                r = [i for i in range(2**n)]
+            else:
+                r = list(product([i for i in range(2**n)], repeat=D))
+                r = [list(r_i) for r_i in r]
+
+        entropy = 0
+        q_x     = []
+        for var in r:
+            q_x.append(self.prob_from_sampler(r=var))
+        for i in range(len(r)):
+            if np.isclose(q_x[i], 0):
+                continue
+            entropy += target(r[i]) * np.log2(q_x[i])
+        return -entropy
 
     def qft_derivative(self, r=None, theta=None):
         """
         Compute the derivative of sampler(s) when a random variable is given or set.
         """
-        if r == None and self.r == None:
+        if isinstance(r, type(None)) and isinstance(self.r, type(None)):
             raise TypeError("Random variable must be set in Sampler object or passed to this function.")
-        elif r == None and self.r != None:
+        elif isinstance(r, type(None)) and not isinstance(self.r, type(None)):
             r = self.r
-        if theta == None:
+        if isinstance(theta, type(None)):
             theta = self._process_params()
         N = self.n
 
         if isinstance(r, int):
             # One-dimensional case
             m   = len(theta)
-            u_x = np.array(self._u_qft_x_j(r, j, N) for j in range(m))
+            u_x = np.array([self._u_qft_x_j(r, j) for j in range(m)])
             dot = np.dot(u_x, theta)
-            return dot * u_x.conj()
+            return np.array(dot * u_x.conj())
 
         elif isinstance(r, np.ndarray) or isinstance(r, list):
             # Multi-dimensional case
@@ -145,3 +206,59 @@ class Sampler:
         """
         N = self.n
         return (1 / np.sqrt(2 ** N)) * np.exp(1j * 2 * np.pi * r * j / (2 ** N))
+
+    def loss_gradient(self, r=None, target=None):
+        """
+        Compute gradient of loss function.
+        """
+        D      = self.D
+        n      = self.n
+        params = self._process_params()
+
+        if isinstance(target, type(None)):
+            target = self.target
+        if isinstance(r, type(None)):
+            if D == 1:
+                r = [i for i in range(2**n)]
+            else:
+                r = list(product([i for i in range(2**n)], repeat=D))
+                r = [list(r_i) for r_i in r]
+        B = len(r)
+
+        if D == 1:
+            # One-dimensional case
+            grad = np.zeros(len(params), dtype="complex")
+            for i in range(B):
+                num  = target(r[i])
+                den  = self.prob_from_sampler(r=r[i])
+                frac = num / 1e-8 if den == 0 else num / den
+                grad = grad + (frac * self.qft_derivative(r=r[i]))
+            return - (1 / B) * grad
+        else:
+            # Multi-dimensional case
+            # TODO: add derivative of processing function
+            grad = []
+            for k in range(len(params)):
+                grad_k = np.zeros(len(params[k]), dtype="complex")
+                for i in range(B):
+                    circs   = self.create_circuits(r=r[i])
+                    frac_1  = self.qft_derivative(r=r[i][k], theta=params[k]) / self.prob_from_sampler(r=r[i][k], qc=circs[k])
+                    frac_2  = target(r[i]) / self.prob_from_sampler(r=r[i])
+                    grad_k += frac_1 * frac_2
+                grad.append(- (1 / B) * grad_k)
+            return grad
+
+    def accept(self, r_hat, r=None, target=None):
+        if not (isinstance(r_hat, int) or isinstance(r_hat, list) or isinstance(r_hat, np.ndarray)):
+            raise TypeError("Random variable `r_hat` must be passed to this function as int, list, or ndarray.")
+        if isinstance(r, type(None)) and isinstance(self.r, type(None)):
+            raise TypeError("Random variable `r` must be set in Sampler object or passed to this function.")
+        elif isinstance(r, type(None)) and not isinstance(self.r, type(None)):
+            r = self.r
+        if isinstance(target, type(None)):
+            target = self.target
+        
+        num  = target(r_hat) * self.prob_from_sampler(r=r)
+        den  = target(r) * self.prob_from_sampler(r=r_hat)
+        prob = num / den if den != 0 else 1 
+        return min([prob, 1])
