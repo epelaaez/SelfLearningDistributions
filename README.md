@@ -20,6 +20,6 @@ Likewise, the function that the `Sampler` will approximate by default is a unifo
 
 Finally, as discussed earlier, the default backend is the `AerSimulator` using the `statevector` method. This can be modified using the `backend` parameter. And the default number of shots is $10000$, which can be changed using the `shots` parameter.
 
-<small>
+<sub>
 Developed for QHack 2022 by Emilio Peláez.
-</small>
+</sub>
