@@ -16,7 +16,7 @@ class Sampler:
                 p    = np.zeros(2**m, dtype="complex")
                 p[0] = (1/np.sqrt(2)) * (1 + 1j) 
                 params.append(p)
-        self.params = np.array(params, dtype="object")
+        self.params = np.array(params)
 
         if isinstance(funcs, type(None)):
             if D > 1:
@@ -196,8 +196,7 @@ class Sampler:
         elif isinstance(r, type(None)) and not isinstance(self.r, type(None)):
             r = self.r
         if isinstance(theta, type(None)):
-            theta = self._process_params()
-        N = self.n
+            theta = self._process_params()[0]
 
         if isinstance(r, int):
             # One-dimensional case
@@ -229,7 +228,6 @@ class Sampler:
         """
         D = self.D
         n = self.n
-        m = self.m
 
         if isinstance(target, type(None)):
             target = self.target
@@ -302,7 +300,7 @@ class Sampler:
         if sample_size == None and all_domain == False:
             sample_size = 2 ** (n - 1)
         if isinstance(callback, type(None)):
-            callback = lambda a, b, c: print(f"Step {a}: change with difference {b}.\nNew params: {c}")
+            callback = lambda a, b, c, f: print(f"Step {a}: change with difference {b}.\nNew params: {c}")
 
         if D == 1:
             change = [0]
@@ -328,11 +326,12 @@ class Sampler:
                 change = self._gradient_change(mu, grad, change)
                 new_p  = np.subtract(self.params, np.multiply(alpha, change))
                 new_p  = new_p / np.linalg.norm(new_p)
-                diff   = np.linalg.norm(np.subtract(self.params, new_p))
+                diff   = np.linalg.norm(np.subtract(self.params[0], new_p))
                 if diff < 1e-20:
+                    callback(step, diff, self.params, True)
                     return self.params
                 self.params = new_p
-                callback(step, diff, self.params)
+                callback(step, diff, self.params, False)
             return self.params
         else:
             change = [0 for _ in range(D)]
@@ -369,9 +368,10 @@ class Sampler:
                         diffs.append(np.linalg.norm(self.params[i][k] - new_p_1[k]))
                     new_p.append(new_p_1 / np.linalg.norm(new_p_1))
                 if np.allclose(diffs, 1e-20):
+                    callback(step, diff, self.params, True)
                     return self.params
                 self.params = new_p
-                callback(step, np.linalg.norm(diffs), self.params)
+                callback(step, np.linalg.norm(diffs), self.params, False)
             return self.params
                 
     def _gradient_change(self, mu, grad, prev_grad):
