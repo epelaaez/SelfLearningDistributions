@@ -16,7 +16,7 @@ class Sampler:
                 p    = np.zeros(2**m, dtype="complex")
                 p[0] = (1/np.sqrt(2)) * (1 + 1j) 
                 params.append(p)
-        self.params = np.array(params)
+        self.params = np.array(params, dtype="object")
 
         if isinstance(funcs, type(None)):
             if D > 1:
@@ -42,7 +42,7 @@ class Sampler:
         self.target = target
 
         if isinstance(backend, type(None)):
-            backend = AerSimulator(method="matrix_product_state")
+            backend = AerSimulator(method="statevector")
         self.backend = backend
         self.shots   = shots
 
@@ -227,9 +227,9 @@ class Sampler:
         """
         Compute gradient of loss function.
         """
-        D      = self.D
-        n      = self.n
-        m      = self.m
+        D = self.D
+        n = self.n
+        m = self.m
 
         if isinstance(target, type(None)):
             target = self.target
@@ -250,23 +250,23 @@ class Sampler:
                 den  = self.prob_from_sampler(r=r[i])
                 frac = num / 1e-20 if den == 0 else num / den
                 grad = grad + (frac * self.qft_derivative(r=r[i]))
-            return - (1 / B) * grad
+            return [- (1 / B) * grad]
         else:
             # Multi-dimensional case
             grad = []
             for k in range(len(params)):
-                if len(r[0][0:k]) > 0:
-                    grad_k = [np.zeros(2**m, dtype="complex") for _ in range(k+1)]
-                else:
-                    grad_k = np.zeros(2**m, dtype="complex")
+                grad_k = [0 for _ in range(len(params[k]))]
                 for i in range(B):
                     circs   = self.create_circuits(r=r[i])
                     mat     = self.derivs[k](r[i][0:k], params[k])
                     frac_1  = self.qft_derivative(r=r[i][k], theta=params[k]) / self.prob_from_sampler(r=r[i][k], qc=circs[k])
                     frac_2  = target(r[i]) / self.prob_from_sampler(r=r[i])
-                    if len(r[0][0:k]) > 0:
+                    if len(r[0][0:k]) > 0 and np.array(grad_k).shape != mat.shape:
                         for j in range(len(grad_k)):
-                            grad_k[j] += np.dot(frac_1 * frac_2, mat[j])
+                            if grad_k[j] == 0:
+                                grad_k[j]  = np.dot(frac_1 * frac_2, mat[j])
+                            else: 
+                                grad_k[j] += np.dot(frac_1 * frac_2, mat[j])
                     else:
                         grad_k += np.dot(frac_1 * frac_2, mat)
                 grad.append(np.multiply(- (1 / B), grad_k))
@@ -290,4 +290,92 @@ class Sampler:
         prob = num / den if den != 0 else 1 
         return min([prob, 1])
 
-    
+    def train(self, mu=0.9, alpha=0.01, target=None, sample_size=None, all_domain=False, steps=10000, callback=None):
+        """
+        Train sampler to approximate target distribution.
+        """
+        D      = self.D
+        n      = self.n
+
+        if isinstance(target, type(None)):
+            target = self.target
+        if sample_size == None and all_domain == False:
+            sample_size = 2 ** (n - 1)
+        if isinstance(callback, type(None)):
+            callback = lambda a, b, c: print(f"Step {a}: change with difference {b}.\nNew params: {c}")
+
+        if D == 1:
+            change = [0]
+            for step in range(0, steps):
+                if all_domain:
+                    samples = [i for i in range(2**n)]
+                else:
+                    possible = [i for i in range(2**n)]
+                    probs    = [self.prob_from_sampler(r) for r in possible]
+                    samples  = []
+                    r        = np.random.randint(2**n)
+                    possible.remove(r)
+                    for _ in range(sample_size - 1):
+                        weights = []
+                        p_q_r   = probs[r]
+                        for r_hat in possible:
+                            p_q_r_hat = probs[r_hat]
+                            weights.append(min([1, (target(r_hat) * p_q_r) / (target(r) * p_q_r_hat)]))
+                        r = random.choices(possible, weights=weights)[0]
+                        samples.append(r)
+                        possible.remove(r)
+                grad   = self.loss_gradient(r=samples)
+                change = self._gradient_change(mu, grad, change)
+                new_p  = np.subtract(self.params, np.multiply(alpha, change))
+                new_p  = new_p / np.linalg.norm(new_p)
+                diff   = np.linalg.norm(np.subtract(self.params, new_p))
+                if diff < 1e-20:
+                    return self.params
+                self.params = new_p
+                callback(step, diff, self.params)
+            return self.params
+        else:
+            change = [0 for _ in range(D)]
+            for step in range(0, steps):
+                if all_domain:
+                    samples = list(product([i for i in range(2**n)], repeat=D))
+                    samples = [list(r_i) for r_i in samples]
+                else:
+                    possible = list(product([i for i in range(2**n)], repeat=D))
+                    possible = [list(r_i) for r_i in possible]
+                    probs    = [self.prob_from_sampler(r) for r in possible]
+                    samples  = []
+                    r        = list(np.random.randint(2**n, size=D))
+                    r_idx    = possible.index(r)
+                    possible.remove(r)
+                    for _ in range(sample_size - 1):
+                        weights = []
+                        p_q_r   = probs[r_idx]
+                        for i, r_hat in enumerate(possible):
+                            p_q_r_hat = probs[i]
+                            weights.append(min([1, (target(r_hat) * p_q_r) / (target(r) * p_q_r_hat)]))
+                        r     = list(random.choices(possible, weights=weights)[0])
+                        r_idx = possible.index(r)
+                        samples.append(r)
+                        possible.remove(r)
+                grad   = self.loss_gradient(r=samples)
+                change = self._gradient_change(mu, grad, change)
+                new_p  = []
+                diffs  = []
+                for i, c in enumerate(change):
+                    new_p_1 = []
+                    for k in range(len(c)):
+                        new_p_1.append(self.params[i][k] - alpha * c[k])
+                        diffs.append(np.linalg.norm(self.params[i][k] - new_p_1[k]))
+                    new_p.append(new_p_1 / np.linalg.norm(new_p_1))
+                if np.allclose(diffs, 1e-20):
+                    return self.params
+                self.params = new_p
+                callback(step, np.linalg.norm(diffs), self.params)
+            return self.params
+                
+    def _gradient_change(self, mu, grad, prev_grad):
+        m = []
+        for i in range(len(grad)):
+            m.append(np.multiply(mu, prev_grad[i]) + np.multiply(1-mu, grad[i]))
+        return m

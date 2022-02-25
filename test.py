@@ -47,11 +47,13 @@ class TestSampler(unittest.TestCase):
 
     def test_one_loss_gradient(self):        
         s   = sl.Sampler(1, 3, 2)
-        p_i = s.params
+        p_i = s.params[0]
         g   = s.loss_gradient()
-        p_f = p_i - 0.01 * g
+        p_f = p_i - 0.01 * g[0]
         p_f = p_f / np.linalg.norm(p_f)
-        self.assertTrue(np.isclose(np.linalg.norm(p_f - p_i), 0), "Change in params for optimal distribution is not zero.")
+        self.assertTrue(np.isclose(np.linalg.norm(p_f[0]), 1), "There is change for optimal paramters.")
+        for p_f_k in p_f[1:]:
+            self.assertTrue(np.isclose(np.linalg.norm(p_f_k), 0), "There is change for optimal paramters.")
 
     def test_multi_loss_gradient(self):
         s = sl.Sampler(2, 3, 2)
@@ -71,6 +73,63 @@ class TestSampler(unittest.TestCase):
             p.append(s.accept(r_hat, r=r))
             r = r_hat
         self.assertTrue(np.allclose(p, [1 for _ in range(31)]), "Did not accept all random variables of uniform distribution.") 
+
+    def test_ten_step_one_train(self):
+        s = sl.Sampler(1, 3, 2) 
+        p = s.train(steps=10)
+        self.assertTrue(np.isclose(np.linalg.norm(p), 1), "Training one-dimension does not return normalized parameters.")
+
+    def test_five_step_two_train(self):
+        s = sl.Sampler(2, 2, 1)
+        p = s.train(steps=5)
+        for p_i in p:
+            self.assertTrue(np.isclose(np.linalg.norm(p_i), 1), "Training two-dimension sampler does not return normalized parameters.")
+
+    def test_three_step_custom_funcs(self):
+        D      = 2
+        n      = 2
+        m      = 1
+        params = []
+        params.append(np.random.random(2**m) + np.random.random(2**m) * 1j)
+        params.append([np.random.random(2**m) + np.random.random(2**m) * 1j for _ in range(2)])
+
+        def lbrm(var, theta):
+            vec = np.array(theta[-1])
+            for i in range(len(var)):
+                vec += var[i] * theta[i]
+            return vec / np.sqrt(np.dot(vec, vec.conj()))
+
+        funcs = [
+            lambda var, theta: theta / (np.sqrt(np.dot(theta, theta.conj()))),
+            lbrm
+        ]
+
+        def id_deriv(var, theta):
+            mat = []
+            n   = np.linalg.norm(theta)
+            for i in range(len(theta)):
+                ones    = np.zeros(len(theta))
+                ones[i] = 1
+                mat.append((ones / n) - ((theta[i] / (n**3)) * theta))
+            return np.array(mat)
+
+        def lbrm_deriv(var, theta):
+            norm_deriv = id_deriv(var, theta)
+            mat        = []
+            for i in range(len(var)):
+                mat.append(np.multiply(norm_deriv, var[i]))
+            mat.append(norm_deriv)
+            return np.array(mat)
+
+        derivs = [
+            id_deriv,
+            lbrm_deriv,
+        ]
+
+        s = sl.Sampler(D, n, m, params=params, funcs=funcs, derivs=derivs)
+        p = s.train(steps=3)
+        for p_i in p:
+            self.assertTrue(np.isclose(np.linalg.norm(p_i), 1), "Training two-dimension sampler with custom functions/derivatives does not return normalized parameters.")
 
 if __name__ == "__main__":
     unittest.main()

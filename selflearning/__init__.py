@@ -4,6 +4,6 @@ from qiskit.algorithms import FasterAmplitudeEstimation, EstimationProblem
 from itertools import product
 
 import numpy as np
-import csv
+import random
 
 from .sampler import Sampler
