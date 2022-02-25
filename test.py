@@ -53,6 +53,16 @@ class TestSampler(unittest.TestCase):
         p_f = p_f / np.linalg.norm(p_f)
         self.assertTrue(np.isclose(np.linalg.norm(p_f - p_i), 0), "Change in params for optimal distribution is not zero.")
 
+    def test_multi_loss_gradient(self):
+        s = sl.Sampler(2, 3, 2)
+        p = s.params
+        g = s.loss_gradient([[2, 1]])
+        try:
+            a = p[0] + g[0]
+            b = p[1] + g[1]
+        except Exception:
+            self.fail("Shape of two-dimensional gradient is not equal to paramter shape.")
+
     def test_uniform_accept(self):
         s = sl.Sampler(1, 5, 2)
         p = []

@@ -4,7 +4,7 @@ class Sampler:
     """
     Create a QFT-based distribution sampler.
     """
-    def __init__(self, D, n, m, params=None, funcs=None, target=None, backend=None, shots=10000) -> None:
+    def __init__(self, D, n, m, params=None, funcs=None, derivs=None, target=None, backend=None, shots=10000) -> None:
         self.D = D
         self.n = n
         self.m = m
@@ -20,15 +20,31 @@ class Sampler:
 
         if isinstance(funcs, type(None)):
             if D > 1:
-                norm       = lambda var, theta: theta / (np.sqrt(np.dot(theta, theta.conj())))
-                self.funcs = [norm for _ in range(D)]
+                norm  = lambda var, theta: theta / (np.sqrt(np.dot(theta, theta.conj())))
+                funcs = [norm for _ in range(D)]
+        self.funcs = funcs
+
+        if isinstance(derivs, type(None)):
+            if D > 1:
+                def n_deriv(var, theta):
+                    mat = []
+                    n   = np.linalg.norm(theta)
+                    for i in range(len(theta)):
+                        ones    = np.zeros(len(theta))
+                        ones[i] = 1
+                        mat.append((ones / n) - ((theta[i] / (n ** 3)) * theta))
+                    return np.array(mat)
+                derivs = [n_deriv for _ in range(D)]
+        self.derivs = derivs
 
         if isinstance(target, type(None)):
-            self.target = lambda r: 1 / (2 ** n)
+            target = lambda r: 1 / ((2 ** n) ** D)
+        self.target = target
 
         if isinstance(backend, type(None)):
-            self.backend = Aer.get_backend("aer_simulator_statevector")
-        self.shots = shots
+            backend = AerSimulator(method="matrix_product_state")
+        self.backend = backend
+        self.shots   = shots
 
         qft = QuantumCircuit(n)
         for i in range(n -1, -1, -1):
@@ -213,7 +229,7 @@ class Sampler:
         """
         D      = self.D
         n      = self.n
-        params = self._process_params()
+        m      = self.m
 
         if isinstance(target, type(None)):
             target = self.target
@@ -223,7 +239,8 @@ class Sampler:
             else:
                 r = list(product([i for i in range(2**n)], repeat=D))
                 r = [list(r_i) for r_i in r]
-        B = len(r)
+        B      = len(r)
+        params = self._process_params(r=r)
 
         if D == 1:
             # One-dimensional case
@@ -231,24 +248,34 @@ class Sampler:
             for i in range(B):
                 num  = target(r[i])
                 den  = self.prob_from_sampler(r=r[i])
-                frac = num / 1e-8 if den == 0 else num / den
+                frac = num / 1e-20 if den == 0 else num / den
                 grad = grad + (frac * self.qft_derivative(r=r[i]))
             return - (1 / B) * grad
         else:
             # Multi-dimensional case
-            # TODO: add derivative of processing function
             grad = []
             for k in range(len(params)):
-                grad_k = np.zeros(len(params[k]), dtype="complex")
+                if len(r[0][0:k]) > 0:
+                    grad_k = [np.zeros(2**m, dtype="complex") for _ in range(k+1)]
+                else:
+                    grad_k = np.zeros(2**m, dtype="complex")
                 for i in range(B):
                     circs   = self.create_circuits(r=r[i])
+                    mat     = self.derivs[k](r[i][0:k], params[k])
                     frac_1  = self.qft_derivative(r=r[i][k], theta=params[k]) / self.prob_from_sampler(r=r[i][k], qc=circs[k])
                     frac_2  = target(r[i]) / self.prob_from_sampler(r=r[i])
-                    grad_k += frac_1 * frac_2
-                grad.append(- (1 / B) * grad_k)
+                    if len(r[0][0:k]) > 0:
+                        for j in range(len(grad_k)):
+                            grad_k[j] += np.dot(frac_1 * frac_2, mat[j])
+                    else:
+                        grad_k += np.dot(frac_1 * frac_2, mat)
+                grad.append(np.multiply(- (1 / B), grad_k))
             return grad
 
     def accept(self, r_hat, r=None, target=None):
+        """
+        Compute probability of accepting `r_hat` given `r` was accepted last. 
+        """
         if not (isinstance(r_hat, int) or isinstance(r_hat, list) or isinstance(r_hat, np.ndarray)):
             raise TypeError("Random variable `r_hat` must be passed to this function as int, list, or ndarray.")
         if isinstance(r, type(None)) and isinstance(self.r, type(None)):
@@ -262,3 +289,5 @@ class Sampler:
         den  = target(r) * self.prob_from_sampler(r=r_hat)
         prob = num / den if den != 0 else 1 
         return min([prob, 1])
+
+    
