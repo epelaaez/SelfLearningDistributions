@@ -6,6 +6,8 @@ A walk-through of the implementation of the paper is available in the [derivatio
 
 ## Usage
 
+### Initialize sampler
+
 This module consists of a single class [`Sampler`](https://github.com/epelaaez/SelfLearningDistributions/blob/main/selflearning/sampler.py#L3) that deals with the whole algorithm. The simplest way to initialize a `Sampler` object is initialized as:
 
 ```python
@@ -19,6 +21,20 @@ If the `Sampler` is initialized like this, it will have initial paramters $[1 + 
 Likewise, the function that the `Sampler` will approximate by default is a uniform distribution over the domain $[0, 2^n)$, which it already approximates exactly (see paragraph just above). This can be changed by passing a callable object to the optional parameter `target` when initializing the `Sampler`. Make sure said callable takes an `int` (one-dimensional case) or `list[int]` of size `D` (multi-dimensional case) as argument and outputs a `float`. This function should be of unit norm over the $[0, 2^n)$ range for the algorithm to work properly (i.e., $\sum_{i=0}^{2^n-1}t(i)=1$, where $t$ is the target function); there is some tolerance to this, which can be tested using `np.isclose(sum_of_your_fun, 1)` with the default tolerance values.
 
 Finally, as discussed earlier, the default backend is the `AerSimulator` using the `statevector` method. This can be modified using the `backend` parameter. And the default number of shots is $10000$, which can be changed using the `shots` parameter.
+
+### Train sampler
+
+Once you initialized your `Sampler`, you can train it by calling the following function:
+
+```python
+final_params = s.train()
+```
+
+You can keep it as simple as that! However, of course, there are optional arguments which you can modify that alter the leraning procedure of the algorithm. First, there are the two arguments that control the change we make to our paramters in each step: `mu` and `alpha`. This are set to `0.9` and `0.01` by default, respectively. 
+
+You can also choose the function to approximate if you don't want to train it for the function stored in `s.target`, to do this pass the new function to the optional argument `target`. Then, you can set the number of samples to use to calculate the gradient of the sampler with the argument `sample_size`, by default this is set to $2^{n-1}$. Also regarding the samples, the parameter `all_domain` can be set to `True` in order to use the whole domain of the circuit to train it (however, this can get expensive quickly and is therefore set to `False` as default).
+
+The number of training steps can be controlled with the paramter `steps`, which is set to ten thousand by default. Finally, we got the argument `callback`, which is a function that will be called after each training step with the following arguments: `callback(step, diff, params)`, where `diff` is the difference between the old parameters and the new ones and `params` are the new parameters. By default, this function is set to print `Step {step}: change with difference {diff}. New params: {params}`
 
 <sub>
 Developed for QHack 2022 by Emilio Peláez.
