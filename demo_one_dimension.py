@@ -6,8 +6,8 @@ D = 1
 n = 3
 m = 2
 
-std  = (2**n-1) / 6
-mean = (2**n-1) / 2
+std  = (2**(n-1)-1) / 6
+mean = (2**(n-1)-1) / 2
 
 def target(x):
     frac = 1 / (std * np.sqrt(2 * np.pi))
